@@ -1,0 +1,390 @@
+---
+name: add-meta-type
+description: Add customized types to the Hola meta-programming framework. Use when the user says "add a meta programming type", "create custom type", "add type validation", or needs to define entity field types for server/client validation. See references/type_guide.md for comprehensive documentation.
+---
+
+# Add Meta Programming Type
+
+Add customized type definitions to the Hola meta-programming framework for entity field validation.
+
+## Trigger Phrases
+
+- "add a meta programming type"
+- "create custom type"
+- "add type validation"
+- "define new type"
+- "register type"
+
+## Overview
+
+The Hola framework uses a type system for:
+
+1. **Server-side validation** - Data conversion and validation in the backend
+2. **Client-side validation** - Form input validation and display in the frontend
+3. **Schema validation** - TypeBox schema for request body validation
+
+## ⚠️ CRITICAL RULES
+
+### 1. NO Type Configuration in Field Attributes
+
+**❌ NEVER** add type configuration attributes to field definitions:
+
+```javascript
+// ❌ WRONG - enum_values is NOT a valid field attribute
+fields: [
+  { name: "status", type: "status", enum_values: [0, 1, 2] }, // ERROR!
+];
+
+// ✅ CORRECT - Define type separately, use in field
+register_type(int_enum_type("status", [0, 1, 2]));
+fields: [
+  { name: "status", type: "status" }, // OK
+];
+```
+
+**Forbidden attributes** in field definitions:
+
+- `enum_values` - Define in type, not field
+- `max_length` - Define in type validation
+- `min_value`, `max_value` - Define in type validation
+- `pattern` - Define in type validation
+- `accept` - Define in client-side type
+
+**Only these field attributes are allowed:**
+
+- `name`, `type`, `required`, `default`, `ref`, `link`, `delete`
+- `create`, `list`, `search`, `update`, `clone`, `sys`, `secure`, `view`, `role`
+
+### 2. Security Types: password vs secret
+
+Choose the correct type for sensitive data:
+
+| Type       | Server                              | Client       | Use Case                              |
+| ---------- | ----------------------------------- | ------------ | ------------------------------------- |
+| `password` | MD5 hash (irreversible)             | Masked `***` | User login passwords (cannot retrieve)|
+| `secret`   | AES-256-CBC encrypted (reversible)  | Masked `***` | API keys/tokens (can decrypt for use) |
+
+```javascript
+// ✅ CORRECT usage
+fields: [
+  { name: "user_password", type: "password" }, // Login - one-way hash
+  { name: "api_key", type: "secret" }, // API key - encrypted, can decrypt
+  { name: "stripe_secret", type: "secret" }, // Token - encrypted, can decrypt
+];
+
+// To decrypt when needed (server-side only):
+import { decrypt_secret } from "hola-server";
+const plainKey = decrypt_secret(record.api_key);
+```
+
+
+## Quick Reference
+
+### Type Categories
+
+| Category          | Use Case                                  | Example                            |
+| ----------------- | ----------------------------------------- | ---------------------------------- |
+| **Int Enum**      | Fixed set of options (stored as integers) | Status, Category, Priority         |
+| **Int Range**     | Numeric range validation                  | Age (18-65), Rating (1-5)          |
+| **Regex Pattern** | Format validation                         | SKU code, Phone number             |
+| **Custom Logic**  | Complex business rules                    | Discount rate, Custom calculations |
+
+### Helper Functions
+
+| Function                         | Purpose            | Example                            |
+| -------------------------------- | ------------------ | ---------------------------------- |
+| `int_enum_type(name, values)`    | Create int enum    | `int_enum_type("status", [0,1,2])` |
+| `int_range_type(name, min, max)` | Create range       | `int_range_type("age", 18, 65)`    |
+| `regex_type(name, pattern)`      | Pattern validation | `regex_type("sku", /^[A-Z]{3}/)`   |
+| `string_type(name)`              | Passthrough string | `string_type("memo")`              |
+| `ok(value)`                      | Return success     | `ok(42)`                           |
+| `err(type, value)`               | Return error       | `err("int", "abc")`                |
+
+## Implementation Steps
+
+### Step 1: Server-Side Type Registration
+
+**Location:** `hola-server/router/[entity].js` or `hola-server/core/type.js`
+
+```javascript
+import { register_type, int_enum_type, register_schema_type } from "hola-server";
+import { t } from "elysia";
+
+// Example 1: Int Enum Type
+register_type(int_enum_type("order_status", [0, 1, 2, 3]));
+// 0=Pending, 1=Processing, 2=Shipped, 3=Delivered
+
+// Register TypeBox schema for request validation
+register_schema_type("order_status", () => t.Union([t.Literal(0), t.Literal(1), t.Literal(2), t.Literal(3)]));
+
+// Example 2: Int Range Type
+register_type(int_range_type("priority", 1, 5));
+register_schema_type("priority", () => t.Number({ minimum: 1, maximum: 5 }));
+
+// Example 3: Custom Type
+register_type({
+  name: "discount_rate",
+  convert: (value) => {
+    const num = parseFloat(value);
+    if (isNaN(num)) return err("discount_rate", value);
+    if (num < 0 || num > 100) return err("discount_rate", value);
+    return ok(parseFloat(num.toFixed(2)));
+  },
+});
+register_schema_type("discount_rate", () => t.Number({ minimum: 0, maximum: 100 }));
+```
+
+### Step 2: Client-Side Type Registration
+
+**Location:** `hola-web/src/types/[entity].js` or `hola-web/src/core/type.js`
+
+```javascript
+import { register_type } from "@/core/type";
+
+// Example 1: Int Enum with i18n
+register_type({
+  name: "order_status",
+  input_type: "autocomplete",
+  items: (vue) => [
+    { value: 0, text: vue.$t("order_status.pending") },
+    { value: 1, text: vue.$t("order_status.processing") },
+    { value: 2, text: vue.$t("order_status.shipped") },
+    { value: 3, text: vue.$t("order_status.delivered") },
+  ],
+  format: (value, vue) => {
+    const statuses = ["pending", "processing", "shipped", "delivered"];
+    return statuses[value] ? vue.$t(`order_status.${statuses[value]}`) : "";
+  },
+});
+
+// Example 2: Range Input
+register_type({
+  name: "priority",
+  input_type: "slider",
+  min: 1,
+  max: 5,
+  step: 1,
+  rule: (vue, field_name) => {
+    const err = vue.$t("type.priority", { field: field_name });
+    return (value) => {
+      const num = parseInt(value);
+      return (num >= 1 && num <= 5) || err;
+    };
+  },
+  format: (value) => `Priority ${value}`,
+});
+
+// Example 3: Custom Validation
+register_type({
+  name: "discount_rate",
+  input_type: "number",
+  suffix: "%",
+  rule: (vue, field_name) => {
+    const err = vue.$t("type.discount_rate", { field: field_name });
+    return (value) => {
+      if (!value) return true;
+      const num = parseFloat(value);
+      return (!isNaN(num) && num >= 0 && num <= 100) || err;
+    };
+  },
+  format: (value) => (value ? `${value.toFixed(2)}%` : ""),
+});
+```
+
+### Step 3: Add i18n Translations
+
+**Location:** `hola-web/src/locales/en.json` (and other locale files)
+
+```json
+{
+  "order_status": {
+    "pending": "Pending",
+    "processing": "Processing",
+    "shipped": "Shipped",
+    "delivered": "Delivered"
+  },
+  "type": {
+    "priority": "Priority must be between 1 and 5",
+    "discount_rate": "Discount rate must be between 0 and 100"
+  }
+}
+```
+
+### Step 4: Use in Entity Definition
+
+```javascript
+import { init_router } from "hola-server";
+
+module.exports = init_router({
+  collection: "order",
+  creatable: true,
+  readable: true,
+  updatable: true,
+  deleteable: true,
+
+  fields: [
+    { name: "status", type: "order_status", required: true, default: 0 },
+    { name: "priority", type: "priority" },
+    { name: "discount", type: "discount_rate" },
+  ],
+});
+```
+
+**⚠️ Default Value Validation:**
+
+Default values are validated against the type system during meta loading:
+
+```javascript
+// ✅ CORRECT - default value is valid for type
+{ name: "priority", type: "priority", default: 3 }  // OK: 3 is in range 1-5
+
+// ❌ WRONG - default value fails type validation
+{ name: "priority", type: "priority", default: 10 } // ERROR: 10 > max(5)
+{ name: "status", type: "order_status", default: 99 } // ERROR: not in [0,1,2,3]
+```
+
+## Critical: Initialization Order
+
+⚠️ **MUST register types BEFORE importing routers!**
+
+**Correct Order in `main.ts`:**
+
+```typescript
+import { init_settings } from "hola-server";
+import { register_types } from "./core/type.js";
+
+// 1. Initialize settings and register types FIRST
+init_settings(settings);
+register_types();
+
+// 2. Dynamic import routers AFTER types are registered
+const userRouter = (await import("./router/user.js")).default;
+const orderRouter = (await import("./router/order.js")).default;
+
+// 3. Build app
+const app = new Elysia().use(userRouter).use(orderRouter);
+```
+
+## Best Practices
+
+1. **Use Int Enums** - Store integers in DB, show i18n labels in UI
+2. **Keep Types DRY** - Use built-in helpers (`int_enum_type`, `int_range_type`)
+3. **Match Validation** - Server and client rules should match
+4. **Descriptive Names** - Use `order_status`, not just `status`
+5. **Register Schema Types** - Always register both `register_type()` and `register_schema_type()`
+6. **Let Framework Handle Display** - Don't manually convert type values to labels (see anti-pattern below)
+
+## ⚠️ Common Anti-Pattern: Manual Type-to-Label Conversion
+
+**❌ DON'T** manually convert type values to labels in custom data tables:
+
+**Why this matters:**
+
+- The Hola meta framework **automatically** calls the type's `format()` function for display
+- Manual conversion is **redundant** and creates maintenance issues
+- When you change type labels, you'd have to update both the type definition AND the manual mapping
+- The framework's automatic conversion is **i18n-aware** and handles all edge cases
+
+**What the framework does automatically:**
+
+1. Reads the field's type (e.g., `"order_status"`)
+2. Looks up the registered client-side type
+3. Calls the type's `format(value, vue)` function
+4. Displays the formatted, translated label
+
+**When to use custom value functions:**
+
+Only use custom `value` functions in data tables when you need to:
+
+- Combine multiple fields: `(item) => item.firstName + " " + item.lastName`
+- Perform calculations: `(item) => item.price * item.quantity`
+- Add custom formatting beyond the type: `(item) => "#" + item.id`
+
+**Never** use them just to convert type values to labels.
+
+## Common Patterns
+
+### Pattern 1: Boolean Flag (Yes/No)
+
+```javascript
+// Server
+register_type(int_enum_type("yes_no", [0, 1])); // 0=No, 1=Yes
+register_schema_type("yes_no", () => t.Union([t.Literal(0), t.Literal(1)]));
+
+// Client
+register_type({
+  name: "yes_no",
+  input_type: "autocomplete",
+  items: (vue) => [
+    { value: 0, text: vue.$t("common.no") },
+    { value: 1, text: vue.$t("common.yes") },
+  ],
+});
+```
+
+### Pattern 2: Rating Scale
+
+```javascript
+// Server
+register_type(int_range_type("rating", 1, 5));
+register_schema_type("rating", () => t.Number({ minimum: 1, maximum: 5 }));
+
+// Client
+register_type({
+  name: "rating",
+  input_type: "slider",
+  min: 1,
+  max: 5,
+  format: (value) => `⭐ ${value}`,
+});
+```
+
+## Built-in Types Reference
+
+The framework provides these built-in types (no registration needed):
+
+| Type | Category | Description |
+|------|----------|-------------|
+| `string` | Basic | HTML-escaped, trimmed string |
+| `lstr` | Basic | Passthrough string (no escaping) |
+| `text` | Basic | Passthrough string for long text |
+| `obj` | Basic | Any object (passthrough) |
+| `file` | Basic | File upload (passthrough) |
+| `boolean` | Basic | `true`/`false` (accepts strings) |
+| `int` | Numeric | Integer |
+| `uint` | Numeric | Unsigned integer (≥0) |
+| `number` | Numeric | Any number |
+| `float` | Numeric | 2-decimal float |
+| `ufloat` | Numeric | Unsigned 2-decimal float |
+| `decimal` | Numeric | Full-precision decimal |
+| `percentage` | Numeric | 2-decimal percentage |
+| `currency` | Numeric | Currency value |
+| `date` | Date/Time | Date string (passthrough) |
+| `datetime` | Date/Time | ISO 8601 datetime |
+| `time` | Date/Time | HH:MM or HH:MM:SS |
+| `email` | Validation | Email address |
+| `url` | Validation | Valid URL |
+| `phone` | Validation | E.164 phone number |
+| `uuid` | Validation | UUID v1-v5 |
+| `color` | Validation | Hex color (#RGB or #RRGGBB) |
+| `ip_address` | Validation | IPv4 address |
+| `enum` | Data | Passthrough enum string |
+| `array` | Data | Comma-separated string or array |
+| `json` | Data | JSON object |
+| `slug` | Transform | URL-safe slug |
+| `password` | Security | MD5 hash (irreversible) |
+| `secret` | Security | AES-256 encrypted (reversible) |
+| `secure` | Security | Alias for `secret` |
+| `age` | Domain | Integer range 0-200 |
+| `gender` | Domain | Int enum [0, 1] |
+| `log_level` | Domain | Int enum [0, 1, 2, 3] |
+| `log_category` | Domain | Passthrough string |
+
+## For More Details
+
+See [references/type_guide.md](references/type_guide.md) for comprehensive documentation including:
+
+- Field attribute restrictions
+- Advanced customization
+- Complete examples
+- Troubleshooting
